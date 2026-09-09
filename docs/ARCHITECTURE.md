@@ -128,8 +128,11 @@ become one trailing options object with the same keys. Mapping table: `tests/ups
 
 Everything above is the parity port. Added without touching the default path:
 - `quirks: 'upstream' | 'fixed'` on every parse entry point (`parsers.ts` → `en/parser.ts` →
-  `PostProcessor`). `'upstream'` (default) is the harness contract; `'fixed'` gates the corrections,
-  each marked `QUIRK fix <name>` in the code and tested in both modes in `tests/quirks/quirks.test.ts`.
+  `PreProcessor` and `PostProcessor`). `'upstream'` (default) is the harness contract; `'fixed'` gates the
+  corrections, each marked `QUIRK fix <name>` in the code and tested in both modes in
+  `tests/quirks/quirks.test.ts`. Since 2026-09-09 five of them are input rewrites in
+  `PreProcessor._fixed_input_rewrites` / `_identify_fractions` (so fixed mode can tokenise a line
+  differently); the rest live in the postprocessor's amount assembly and text restoration.
 - `tag_ingredient()` (`parsers.ts`, `en/parser.ts: tag_ingredient_en`): the first half of
   `parse_ingredient_en` — PreProcessor, model, `expect_name_in_output` fallback — returning tokens,
   POS tags, labels and scores; no postprocessor, so none of its mirrored raises.

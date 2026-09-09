@@ -1,6 +1,6 @@
 {
   "name": "ingredient-parser-typescript",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Bit-parity TypeScript port of strangetom/ingredient-parser (pinned at ffd6ae3, release 2.7.0)",
   "keywords": [
     "parser",

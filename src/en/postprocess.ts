@@ -19,6 +19,7 @@ import {
   INDEFINITE_QUANTIFIERS,
   PREPARED_INGREDIENT_TOKENS,
   SINGULAR_TOKENS,
+  SIZES,
   STOP_WORDS,
   STRING_NUMBERS_REGEXES,
 } from './_constants.js';
@@ -84,6 +85,29 @@ export interface PartialIngredientAmountInit {
 
 /** Dataclass for incrementally building ingredient amount information. */
 /** Two unit token texts (possibly pluralised) name the same unit: equal, equal after singularising, or synonyms. */
+// QUIRK fix `size_adjective_container`: words the model labels UNIT in "10 thin slices" that are
+// sizes, not measures. Upstream's SIZES table plus the shapes the corpus uses ("paper-thin",
+// "1/2-inch-thick", "nickel-size", "thumb-sized", "thick-cut").
+const SIZE_SUFFIX = /-(thick|thin|size|sized|cut)$/u;
+const DIMENSION_SUFFIX = /-(thick|thin)$/u;
+const EXTRA_SIZE_WORDS: ReadonlySet<string> = new Set(['round', 'square', 'long', 'short', 'fine', 'coarse', 'thickish', 'paper-thin', 'wafer-thin']);
+function is_size_word(text: string): boolean {
+  const lower = text.toLowerCase();
+  return SIZES.includes(lower) || EXTRA_SIZE_WORDS.has(lower) || SIZE_SUFFIX.test(lower);
+}
+/**
+ * QUIRK fix `stray_unit_token` helper: words that can never be the unit completing an amount — sizes
+ * proper and approximation words ("scant", "generous"). Narrower than `is_size_word`: "square" and
+ * "round" are containers in noun position ("8 (1 ounce) squares", "1 (8 ounce) round Reblochon").
+ */
+const EXTRA_DESCRIPTIVE_WORDS: ReadonlySet<string> = new Set(['paper-thin', 'wafer-thin', 'thickish', 'scant', 'heaping', 'heaped', 'rounded', 'level']);
+function is_descriptive_word(text: string): boolean {
+  const lower = text.toLowerCase();
+  return SIZES.includes(lower) || SIZE_SUFFIX.test(lower) || EXTRA_DESCRIPTIVE_WORDS.has(lower) || APPROXIMATE_PREFIXES.includes(lower);
+}
+/** A fraction placeholder anywhere in a token ("1-1#1$2"), where FRACTION_TOKEN_PATTERN wants the whole token. */
+const FRACTION_PLACEHOLDER = /#[0-9]+\$[0-9]+/u;
+
 function sameUnit(a: string, b: string): boolean {
   const sing = (u: string): string => (Object.hasOwn(UNITS, u) ? (UNITS as Record<string, string>)[u] as string : u);
   const sa = sing(a).toLowerCase();
@@ -546,14 +570,17 @@ export class PostProcessor {
       const group_tokens: string[] = [];
       for (const i of idx) {
         const tokText = pyAt(this.tokens, i).text;
-        if (FRACTION_TOKEN_PATTERN.test(tokText)) {
+        // QUIRK fix `placeholder_text`: upstream only restores tokens that are entirely a fraction, so a
+        // range with a mixed number ("1- to 1 1/2-inch" → "1-1#1$2") leaks its placeholder into the text.
+        if (FRACTION_TOKEN_PATTERN.test(tokText) || (this.quirks === 'fixed' && FRACTION_PLACEHOLDER.test(tokText))) {
           let text_fraction = pyStrip(pyReplaceAll(pyReplaceAll(tokText, '#', ' '), '$', '/'));
           // If fraction range, remove space that will follow hyphen caused by replacing # with space.
           text_fraction = pyReplaceAll(text_fraction, '- ', '-');
           group_tokens.push(text_fraction);
-        } else if (this.quirks === 'fixed' && selected_label === 'NAME' && pyAt(this.tokens, i).plural) {
+        } else if (this.quirks === 'fixed' && pyAt(this.tokens, i).plural) {
           // QUIRK fix `name_pluralisation`: the preprocessor singularised this token ("leaves" → "leaf");
-          // restore its plural here, per token, instead of re-pluralising the whole name text below.
+          // restore its plural here, per token, instead of re-pluralising the whole text below. Since
+          // 2026-09-09 this applies to every text field, not only NAME ("(one 3-inch knob)" stays singular).
           group_tokens.push(pluralise_units(tokText, this.custom_units));
         } else {
           group_tokens.push(tokText);
@@ -594,7 +621,7 @@ export class PostProcessor {
     // every IngredientText, so a NAME like "flat-leaf parsley" becomes "flat-leaves parsley". In
     // 'fixed' mode a NAME only restores the tokens the preprocessor singularised (per token, above);
     // other fields keep upstream's behaviour.
-    if (!(this.quirks === 'fixed' && selected_label === 'NAME')) text = pluralise_units(text, this.custom_units);
+    if (this.quirks !== 'fixed') text = pluralise_units(text, this.custom_units);
 
     if (parts.length === 0) {
       return null;
@@ -842,6 +869,42 @@ export class PostProcessor {
           this.consumed.push(...match.map((i) => pyAt(tokens, i).index));
 
           let first: IngredientAmount;
+          if (
+            this.quirks === 'fixed' &&
+            listEq(pattern, patterns[3] as string[]) &&
+            is_size_word(pyAt(tokens, match[1] as number).text) &&
+            // "Very thin lemon slices": the QTY token must be a number, not a stray word.
+            /[0-9]/u.test(pyAt(tokens, match[0] as number).text) &&
+            // "1 1/2-inch-thick slice": a fractional quantity before a dimension word IS the dimension.
+            !(DIMENSION_SUFFIX.test(pyAt(tokens, match[1] as number).text) && /[#.]/u.test(pyAt(tokens, match[0] as number).text))
+          ) {
+            // QUIRK fix `size_adjective_container` (docs/QUIRKS.md): "10 thin slices" is ten slices, not one
+            // slice of "10 thin". Upstream's container pattern treats the middle token as the size of a
+            // single container ("14 ounce can"). When that token is a size word rather than a measure, the
+            // quantity counts the containers and the word becomes the SIZE.
+            const qty = pyAt(tokens, match[0] as number);
+            const size = pyAt(tokens, match[1] as number);
+            const unit = pyAt(tokens, match[2] as number);
+            this.consumed.pop(); // the match was pushed above; re-push without the size token
+            this.consumed.pop();
+            this.consumed.pop();
+            this.consumed.push(qty.index, unit.index);
+            size.label = 'SIZE';
+            amounts.push(
+              ingredient_amount_factory({
+                quantity: qty.text,
+                unit: unit.text,
+                text: pyStrip([qty.text, unit.text].join(' ')),
+                confidence: pyMean([qty.score, unit.score]),
+                starting_index: qty.index,
+                APPROXIMATE: this._is_approximate(match[0] as number, tokens),
+                string_units: this.string_units,
+                volumetric_units_system: this.volumetric_units_system,
+                custom_units: this.custom_units,
+              }),
+            );
+            continue;
+          }
           if (listEq(pattern, patterns[3] as string[])) {
             // ["QTY", "UNIT", "UNIT"]: no explicit count in pattern.
             // E.g., "15 ounce can" -> first amount: 1 can
@@ -1185,8 +1248,14 @@ export class PostProcessor {
     // with the list position `i`.
     const related_idx = tokens.filter((t) => t.text === '(' || t.text === '/' || t.text === '[').map((t) => t.index + 1);
 
+    // QUIRK fix `stray_unit_token`: sentence index of the last token folded into the current amount, and
+    // the parenthetical per-container measures to flag SINGULAR after the related-flag distribution
+    // (flagging them earlier would spread the flag onto the count through `_distribute_related_flags`).
+    let last_index = -1;
+    const per_container: _PartialIngredientAmount[] = [];
     tokens.forEach((token, i) => {
       if (token.label === 'QTY') {
+        last_index = token.index;
         // Whenever we come across a new QTY, create new IngredientAmount with some exceptions.
         // Upstream quirk: `tokens[i - 1]` with i == 0 is Python negative indexing → the LAST token.
         if (token.text === 'dozen' && pyAt(tokens, i - 1).label === 'QTY') {
@@ -1219,6 +1288,40 @@ export class PostProcessor {
       }
 
       if (token.label === 'UNIT') {
+        const before_stray = this.tokens.find((t) => t.index === token.index - 1);
+        if (
+          this.quirks === 'fixed' &&
+          amounts.length > 0 &&
+          last_index >= 0 &&
+          token.index !== last_index + 1 &&
+          before_stray !== undefined &&
+          // Only after a parenthetical or a size/comment run; "4 large garlic cloves" (a NAME between) keeps
+          // upstream's reading, where "cloves" completes the unit "large clove".
+          (before_stray.text === ')' || before_stray.text === ']' || ['SIZE', 'COMMENT', 'PREP', 'PURPOSE'].includes(before_stray.label))
+        ) {
+          // QUIRK fix `stray_unit_token` (docs/QUIRKS.md): upstream appends every UNIT token to the
+          // current amount however far away it is, so "2 ounces ginger root (one 3-inch knob)" gets the
+          // unit "ounces knobs". A UNIT token that does not directly follow the amount's last token
+          // completes the previous unit-less amount ("2 (6-ounce) fillets" → "2 fillets") or, failing
+          // that, joins the field of the token before it (the SIZE of "(one 3-inch knob)").
+          const current = pyAt(amounts, -1);
+          const previous = amounts.length >= 2 ? pyAt(amounts, -2) : null;
+          // A size or approximation word ("scant", "large") is never a unit to complete an amount with.
+          const descriptive = is_descriptive_word(token.text);
+          const target = descriptive ? null : current.unit.length === 0 ? current : previous !== null && previous.unit.length === 0 ? previous : null;
+          if (target !== null) {
+            target.unit.push(token.text);
+            target.confidence.push(token.score);
+            if (target === current) last_index = token.index;
+            // The parenthetical measure between the count and its container is per container
+            // ("4 (6 ounce) containers": 6 ounces each), the same SINGULAR upstream sets for "1 (14 oz) can".
+            else per_container.push(current);
+          } else {
+            token.label = ['SIZE', 'COMMENT', 'PREP', 'PURPOSE'].includes(before_stray.label) ? before_stray.label : 'COMMENT';
+          }
+          return;
+        }
+        last_index = token.index;
         if (amounts.length === 0) {
           // Not come across a QTY yet, so create IngredientAmount
           let implicit_quantity = false;
@@ -1282,6 +1385,7 @@ export class PostProcessor {
 
     // Set APPROXIMATE, SINGULAR and PREPARED_INGREDIENT flags to be the same for all related amounts.
     amounts = this._distribute_related_flags(amounts);
+    for (const a of per_container) a.SINGULAR = true; // QUIRK fix `stray_unit_token`, see above
 
     // Loop through amounts list to fix unit and confidence: unit needs converting to a string,
     // confidence needs averaging. Then convert to IngredientAmount object.
@@ -1367,6 +1471,21 @@ export class PostProcessor {
 
   /** True if the UNIT token at `i` is followed by a singular token ("each"). Marks it consumed. */
   _is_singular(i: number, tokens: LabelledToken[]): boolean {
+    if (this.quirks === 'fixed' && pyAt(tokens, i).label === 'QTY') {
+      // QUIRK fix `each_before_amount` (docs/QUIRKS.md): upstream only sees "each" AFTER the amount
+      // ("4 pounds each"); "each weighing about 6 ounces" leaves the amount unmarked. Up to three
+      // comment tokens before the quantity are searched for "each"; the run is consumed.
+      const run: number[] = [];
+      for (let k = i - 1; k >= 0 && run.length < 3; k--) {
+        const t = pyAt(tokens, k);
+        if (t.label !== 'COMMENT') break;
+        run.push(k);
+        if (SINGULAR_TOKENS.includes(t.text.toLowerCase())) {
+          for (const j of run) this.consumed.push(pyAt(tokens, j).index);
+          return true;
+        }
+      }
+    }
     if (i === tokens.length - 1) {
       return false;
     }

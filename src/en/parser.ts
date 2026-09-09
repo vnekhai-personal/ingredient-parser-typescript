@@ -53,7 +53,7 @@ function prepare(sentence: string, options: ParseIngredientEnOptions): Prepared 
   }
   custom_units = { ...custom_units, ..._capitalized_units };
 
-  const processed_sentence = new PreProcessor(sentence, { custom_units });
+  const processed_sentence = new PreProcessor(sentence, { custom_units, quirks: options.quirks ?? 'upstream' });
   const features = processed_sentence.sentence_features();
   const tagged = TAGGER.tag_from_features(features);
   let labels = tagged.map(([l]) => l);
@@ -102,7 +102,7 @@ export function tag_ingredient_en(sentence: string, options: ParseIngredientEnOp
   }
   custom_units = { ...custom_units, ..._capitalized_units };
   const TAGGER = load_parser_model();
-  const processed_sentence = new PreProcessor(sentence, { custom_units });
+  const processed_sentence = new PreProcessor(sentence, { custom_units, quirks: options.quirks ?? 'upstream' });
   const tagged = TAGGER.tag_from_features(processed_sentence.sentence_features());
   let labels = tagged.map(([l]) => l);
   let scores = tagged.map(([, s]) => s);

@@ -217,7 +217,9 @@ entries stay in the ledgers with what changed. If a reader cannot replay it, the
 The whole library is ported and verified (`docs/VERIFICATION.md`); the parity version is tagged
 `v2.7.0-parity`; the first corrections beyond upstream are in (`quirks: 'fixed'`, `tag_ingredient`);
 0.1.0 is published (npm `ingredient-parser-typescript`, GitHub release v0.1.0). Since then: the
-`natural` dependency is vendored (0.2.0 published); 0.2.1 = licence-notice wording.
+`natural` dependency is vendored (0.2.0 published); 0.2.1 = licence-notice wording. 0.3.0
+(2026-09-09): nine more `quirks: 'fixed'` corrections from a consumer bug report (docs/QUIRKS.md),
+incl. the first input rewrites; every corpus line they change was read.
 
 ### Measured facts (do not re-derive; update in the same change that changes them)
 | Fact | Value |
@@ -235,7 +237,7 @@ The whole library is ported and verified (`docs/VERIFICATION.md`); the parity ve
 | Features (level 2) | 16,272 seqs recomputed from text, 0 mismatches; 81,416 corpus + 107 fixture lines, 0 hash mismatches |
 | Output (level 3) | 81,523 / 81,523 `ParsedIngredient` byte-identical; API 107 / 107; 92 option combinations 0; ~60,000 adversarial lines 0 |
 | Foundation foods (level 3 FF) | 81,523 lines; 0 semantic mismatches; 3,456 (4.24%) confidence-only ≤9.3e-5, 3,396 of those exactly 1e-6 (float32 seam + upstream's hash-order variance); Snowball 13,839/13,839; caches identical on all 11,362 entries |
-| Suite | `pnpm test` 481 passed / 9 skipped (7 `HARNESS=full` gates, Snowball gate, model card); 29 skipped counting the 20 `EVAL=1` cases; upstream 45 files / 458 cases with 9 documented `it.fails` deltas |
+| Suite | `pnpm test` 491 passed / 9 skipped (7 `HARNESS=full` gates, Snowball gate, model card); 29 skipped counting the 20 `EVAL=1` cases; upstream 45 files / 458 cases with 9 documented `it.fails` deltas |
 | Hermes (RN 0.81.5) | 4,814 / 4,814 parses byte-identical to Node (re-verified on the vendored-tagger build); plain parse ~5 ms CPU, FF parse ~60 ms, preload 1–3 s; first FF parse 0.17 s with precomputed caches |
 | Stemmer | SETTLED — natural 8.1.1 vanilla `PorterStemmer` (upstream: NLTK Snowball), ported in `src/en/_porter.ts`; differs from Snowball on 5.2% of vocab / 2.3% of token occurrences, costs ~0pt |
 

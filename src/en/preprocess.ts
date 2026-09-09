@@ -44,6 +44,7 @@ import {
   UPPERCASE_PATTERN,
 } from './_regex.js';
 import { SentenceStrucureFeatures } from './_structure_features.js';
+import type { Quirks } from './postprocess.js';
 import {
   combine_quantities_split_by_and,
   is_unit_synonym,
@@ -60,7 +61,14 @@ export type FeatureDict = Record<string, string | boolean>;
 
 export interface PreProcessorOptions {
   custom_units?: Readonly<Record<string, string>> | null;
+  /** `'upstream'` (default) normalises exactly as Python at the pin; `'fixed'` adds the input corrections in docs/QUIRKS.md. */
+  quirks?: Quirks;
 }
+
+// QUIRK fix `dimension_fraction_count` helper: a plural word right after a hyphenated dimension
+// ("-inch-thick slices", "-inch pieces"), which marks "12 1/4-inch-thick slices" as a count plus a
+// fraction rather than the mixed number 12¼.
+const HYPHENATED_DIMENSION_THEN_PLURAL = /^-(?:inch|inches|in|cm|mm|centimet(?:er|re)|millimet(?:er|re))(?:-[A-Za-z]+)?\s+[A-Za-z]+(?<!s)s\b/u;
 
 /**
  * Recipe ingredient sentence PreProcessor: normalises the sentence, tokenises it, and
@@ -73,9 +81,11 @@ export class PreProcessor {
   readonly singularised_indices: number[];
   readonly tokenized_sentence: Token[];
   readonly sentence_structure: SentenceStrucureFeatures;
+  readonly quirks: Quirks;
 
   constructor(input_sentence: string, options: PreProcessorOptions = {}) {
     const custom_units = options.custom_units ?? null;
+    this.quirks = options.quirks ?? 'upstream';
     this.input = input_sentence;
     this.sentence = this._normalise(input_sentence);
 
@@ -107,6 +117,7 @@ export class PreProcessor {
   /** Normalise sentence prior to feature extraction. Order matters. */
   _normalise(sentence: string): string {
     const funcs: ((s: string) => string)[] = [
+      (s) => this._fixed_input_rewrites(s),
       (s) => this._remove_price_annotations(s),
       (s) => this._replace_en_em_dash(s),
       (s) => this._replace_html_fractions(s),
@@ -122,6 +133,37 @@ export class PreProcessor {
     ];
     for (const func of funcs) sentence = func(sentence);
     return pyStrip(sentence);
+  }
+
+  /**
+   * QUIRK fixes applied to the raw sentence before upstream's normalisation, 'fixed' mode only
+   * (docs/QUIRKS.md). Each rewrites the input into a shape the model already handles well; the
+   * default mode returns the sentence untouched.
+   */
+  _fixed_input_rewrites(sentence: string): string {
+    if (this.quirks !== 'fixed') return sentence;
+    // `literal_escapes`: the two-character sequences \n, \t, \r (an export artefact) are whitespace.
+    sentence = sentence.replace(/\\[ntr]/gu, ' ');
+    // `number_words`: phrasings upstream's STRING_NUMBERS table lacks.
+    sentence = sentence.replace(/\bhalf a dozen\b/giu, '6');
+    sentence = sentence.replace(/\ba dozen\b/giu, '12');
+    sentence = sentence.replace(/\bhalf (?:of )?an?\b/giu, '1/2');
+    // "a couple (of)" only where an amount stands: sentence start, after "(", ",", "or", "and", "plus";
+    // not inside prose ("soaked for a couple of hours").
+    sentence = sentence.replace(/(?<=^|\(|,\s*|\b(?:or|and|plus)\s+)a couple(?: of)?\b/giu, 'about 2');
+    // `spaceless_mixed_number`: "11/2", "13/4", "12/3" are "1 1/2", "1 3/4", "1 2/3" — two digits starting
+    // with 1 whose second digit is a proper numerator for the single-digit denominator.
+    sentence = sentence.replace(/(?<![0-9/.])1([1-9])\/([2-9])(?![0-9/])/gu, (m, n: string, d: string) =>
+      Number(n) < Number(d) ? `1 ${n}/${d}` : m,
+    );
+    // `hyphenated_count_container`: "1-14 1/2-ounce can" is a count joined to a sized container by a
+    // hyphen, not a range: only when the second number is itself hyphen-attached to a word.
+    // A weight range written with hyphens ("2-3-lb roast") stays a range: the container size must be
+    // clearly larger than the count (more than twice it).
+    sentence = sentence.replace(/^([0-9]+)-(?=([0-9]+)(?: [0-9]+\/[0-9]+)?-[A-Za-z])/u, (m, count: string, size: string) =>
+      Number(size) > 2 * Number(count) ? `${count} ` : m,
+    );
+    return sentence;
   }
 
   /** Remove price annotations like ($0.20), (£1.50). */
@@ -162,6 +204,23 @@ export class PreProcessor {
         }
       }
 
+      // QUIRK fix `dimension_fraction_count`: "12 1/4-inch-thick slices" is twelve slices a quarter inch
+      // thick, not 12¼ of something; upstream merges the whole number into the fraction. In 'fixed'
+      // mode a mixed number whose fraction is hyphen-attached to a dimension followed by a plural word
+      // keeps its whole number as a separate token ("1 1/2-inch-thick slice", singular, still merges).
+      if (this.quirks === 'fixed' && match.includes(' ')) {
+        const at = sentence.indexOf(match);
+        // Not when another number precedes the mixed number ("2 1 1/2-pound eggplants": the count is there).
+        const precededByNumber = at > 0 && /[0-9]\s*$/u.test(sentence.slice(0, at));
+        const parts = match.split(CONSECUTIVE_SPACES);
+        const fraction = parts[parts.length - 1] as string;
+        const whole = parts.slice(0, -1).join(' ');
+        // A whole number of 1 before a plural noun ("(1½-inch pieces)") is the fraction's, not a count.
+        if (at >= 0 && !precededByNumber && whole !== '1' && HYPHENATED_DIMENSION_THEN_PLURAL.test(sentence.slice(at + match.length))) {
+          sentence = pyReplaceAll(sentence, match, `${whole} #${pyReplaceAll(fraction, '/', '$')}`);
+          continue;
+        }
+      }
       let replacement = pyReplaceAll(match, '/', '$');
       if (replacement.includes(' ')) {
         replacement = replacement.replace(CONSECUTIVE_SPACES, '#');
