@@ -23,14 +23,16 @@
 | `each_before_amount` | only "each" AFTER an amount marks it SINGULAR ("4 pounds each"); "6 apples, each weighing about 6 ounces" leaves the 6 ounces as a total, comment "each weighing" | up to three comment tokens before the quantity are searched for "each"; the run is consumed: `6 ounces` SINGULAR APPROXIMATE, no comment. 40 corpus lines |
 | `stray_unit_token` | every UNIT token joins the current amount however far away it is: "2 ounces ginger root (one 3-inch knob)" has unit "ounces knobs"; "8 (1 ounce) squares white chocolate" has `8` + `1 ounce square`; "(a scant 1 1/3 cups)" has unit "ounces scant" | a UNIT token that follows a parenthesis or a size/comment run instead of the amount completes the nearest unit-less amount ("8 squares" + "1 ounce", the parenthetical measure flagged SINGULAR as per-container, exactly as upstream flags "1 (14 oz) can") or, failing that, joins the field of the token before it (size "(one 3 inch knob)"). Size and approximation words ("scant", "large") never complete an amount. After a name token ("4 large garlic cloves") upstream's reading stays |
 | `placeholder_text` | a range containing a mixed number ("cut into 1- to 1 1/2-inch cubes") leaks the internal fraction placeholder: "cut into 1-1#1$2 inch cubes" | placeholders are restored wherever they occur: "cut into 1-1 1/2 inch cubes" |
+| `with_clause` | a descriptor after a comma that the model labels as part of the name stays in it: "canned plum tomatoes with liquid", "chicken thighs with bones", "celery, with leaves" | a name run beginning with "with" right after a comma becomes the comment, where upstream itself files "turkey, with giblets": name "chicken thighs", comment "with bones". "with" inside a name ("diced tomatoes with green chile peppers") is untouched. 55 corpus lines |
 
 The input corrections (`literal_escapes`, `number_words`, `spaceless_mixed_number`,
 `hyphenated_count_container`, `dimension_fraction_count`) rewrite the sentence before
 tokenisation, so in `'fixed'` mode the model can see different tokens on those lines; each was
 checked on every corpus line it touches. `tag_ingredient` honours `quirks` for them.
 
-Over the training corpus `'fixed'` changes 3,060 of 81,416 lines: 913 names and about 1,550
-other text fields through the pluralisation restore, and 544 amount lists: 222 size-adjective
+Over the training corpus `'fixed'` changes 3,112 of 81,416 lines: 913 names through the
+pluralisation restore, 55 through `with_clause`, about 1,550 other text fields through the
+pluralisation restore, and 544 amount lists: 222 size-adjective
 containers, 195 parenthetical container sizes and 37 fused units (`stray_unit_token`), 49
 number words, 18 dimension counts, 16 `each` flags, 5 spaceless mixed numbers. Every one of the
 3,060 changed lines was read, each with the fields that differ between the two modes. The first
@@ -38,10 +40,17 @@ version of this batch failed that review on seven shapes ("4 large garlic cloves
 "2 1 1/2-pound eggplants", "(1½-inch pieces)", "Very thin lemon slices", "2-3-lb roast",
 "scant ½ cup", "a couple of hours" in prose), which is what the guards in the table are for.
 One rewrite reaches prose by design: "a dozen" becomes 12 wherever it stands ("cut into a dozen
-2-ounce slices" → "cut into 12 2 ounce slices"), since it is a count in every position.
+2-ounce slices" → "cut into 12 2 ounce slices"), since it is a count in every position. The 55
+`with_clause` lines were read the same way.
 
 Not changed, with reasons: a phrase like "A mess of greens" being labelled as a name is the
-model's decision, not postprocessing, and so are "with liquid" or "Julienned" inside a name.
+model's decision, not postprocessing, and so is "Julienned" inside a name (the 67 corpus lines
+starting with a participle labelled as name are "whipped cream", "toasted", "pickled", … and are
+right). Fused alternatives ("panko or coarse dry bread crumbs" → one name) are a label decision
+too: a rule that splits them was built and rolled back, because nothing in the labels says
+whether the first alternative is complete ("panko", "Nutella") or needs the shared noun
+("sheep's, goat's, or cow's milk yogurt" → "sheep's"), so it produced confidently wrong names
+for the second kind. That needs training data marking the variant on both sides.
 "plus" across an intervening preparation ("1 tablespoon butter, softened, plus 7 tablespoons")
 is not grouped because the same wording ("plus more for dusting") usually means an extra
 amount for another purpose; the consumer sees both amounts and the comment. Amounts belonging

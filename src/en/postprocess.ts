@@ -207,10 +207,31 @@ export class PostProcessor {
     return _str.join('\n');
   }
 
+  /**
+   * QUIRK fixes applied to the model's labels before upstream's assembly runs ('fixed' mode only,
+   * docs/QUIRKS.md). Upstream's own name and comment assembly then produces the result.
+   */
+  _fixed_label_corrections(): void {
+    const toks = this.tokens;
+    // `with_clause`: a name run that begins with "with" right after a comma is a descriptor
+    // ("tomatoes, with juice", "celery, with leaves", "lamb neck, with bones"), never part of the
+    // food's name; upstream files such descriptors under comment ("turkey, with giblets").
+    for (let i = 1; i < toks.length; i++) {
+      const t = toks[i] as LabelledToken;
+      if (t.text.toLowerCase() !== 'with' || !t.label.includes('NAME') || (toks[i - 1] as LabelledToken).text !== ',') continue;
+      for (let j = i; j < toks.length; j++) {
+        const u = toks[j] as LabelledToken;
+        if (u.label === 'NAME_SEP' || !u.label.includes('NAME')) break;
+        u.label = 'COMMENT';
+      }
+    }
+  }
+
   /** `@cached_property parsed`: return parsed ingredient data (computed once). */
   get parsed(): ParsedIngredient {
     if (this.#parsed !== undefined) return this.#parsed;
 
+    if (this.quirks === 'fixed') this._fixed_label_corrections();
     const amounts = this._postprocess_amounts();
 
     let foundationfoods: FoundationFood[] = [];

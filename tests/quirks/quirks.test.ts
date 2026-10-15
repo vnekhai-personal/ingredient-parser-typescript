@@ -190,6 +190,20 @@ describe('quirks batch 2026-09-09: input corrections and amount assembly', () =>
     expect(fx(s).preparation?.text).toBe('cut into 1-1 1/2 inch cubes');
   });
 
+  it('with_clause — ", with juice" is a comment, not part of the name', () => {
+    expect(parse_ingredient('1 1/2 cups canned plum tomatoes, diced, with liquid').name[0]!.text).toBe('canned plum tomatoes with liquid');
+    const f = fx('1 1/2 cups canned plum tomatoes, diced, with liquid');
+    expect(f.name.map((n) => n.text)).toEqual(['canned plum tomatoes']);
+    expect(f.preparation?.text).toBe('diced');
+    expect(f.comment?.text).toBe('with liquid');
+    expect(fx('3 stalks celery, with leaves, chopped').name[0]!.text).toBe('celery');
+    expect(fx('3 stalks celery, with leaves, chopped').comment?.text).toBe('with leaves');
+    // both alternatives lose the clause
+    expect(fx('2 cups chopped canned or fresh tomatoes, with their juice').name.map((n) => n.text)).toEqual(['canned tomatoes', 'fresh tomatoes']);
+    // "with" inside a name (no comma before it) is untouched
+    expect(fx('1 (14.5 ounce) can diced tomatoes with green chile peppers, with liquid').name[0]!.text).toBe('diced tomatoes with green chile peppers');
+  });
+
   it('name_pluralisation now covers every text field', () => {
     // upstream re-pluralises every unit word in every text field, even after "1"
     expect(parse_ingredient('1 tablespoon chopped fresh oregano or 1 teaspoon dried').comment?.text).toBe('or 1 teaspoons dried');
